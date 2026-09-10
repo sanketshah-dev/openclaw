@@ -219,6 +219,7 @@ Notes:
 - Allowlist senders with `channels.mattermost.groupAllowFrom` (user IDs recommended).
 - `channels.mattermost.groupAllowFrom` accepts `accessGroup:<name>` entries. See [Access groups](/channels/access-groups).
 - Per-channel mention overrides live under `channels.mattermost.groups.<channelId>.requireMention` or `channels.mattermost.groups["*"].requireMention` for a default.
+- Text commands can follow the mention: `@<bot-username> /new` runs `/new` while `commands.text` is enabled (the default). Mattermost itself executes a bare `/new` as a Mattermost slash command instead of posting it.
 - `@username` matching is mutable and only enabled when `channels.mattermost.dangerouslyAllowNameMatching: true`.
 - Open channels: `channels.mattermost.groupPolicy="open"` (mention-gated).
 - Resolution order: `channels.mattermost.groupPolicy`, then `channels.defaults.groupPolicy`, then `"allowlist"`.
@@ -252,6 +253,14 @@ Use these target formats with `openclaw message send` or cron/webhooks:
 | `@username`                         | DM (username resolved via the Mattermost API)                 |
 
 Outbound sends support at most one attachment per message; split multiple files into separate sends.
+
+Set `channels.mattermost.mediaMaxMb` to limit each inbound download and outbound
+attachment in MiB. `accounts.<id>.mediaMaxMb` overrides the channel root, then
+`agents.defaults.mediaMaxMb` supplies the fallback. Without any configured cap,
+inbound downloads retain their 8 MiB default and outbound media retains the
+shared loader defaults. Outbound images may be optimized. With a configured cap,
+download or upload failures fail the send instead of posting the unchecked original
+URL. Without a configured cap, the existing URL fallback remains available.
 
 <Warning>
 Bare opaque IDs (like `64ifufp...`) are **ambiguous** in Mattermost (user ID vs channel ID).
@@ -317,6 +326,7 @@ Preview streaming is **on by default** in `partial` mode. Configure via `channel
   </Accordion>
   <Accordion title="Streaming behavior notes">
     - If the stream cannot be finalized in place (for example the post was deleted mid-stream), OpenClaw falls back to sending a fresh final post so the reply is never lost.
+    - Clearing a plan removes an otherwise empty preview; a replacement plan gets a fresh preview even when its text is unchanged. At turn completion, failed deletions of old previews are attempted once more without deleting the finalized reply. If deletion still fails, the old preview may remain; verbose logs include the cleanup failure.
     - Thinking-only payloads are suppressed from channel posts, including text that arrives as a `> Thinking` blockquote. Set `/reasoning on` to see thinking in other surfaces; the Mattermost final post keeps the answer only.
     - See [Streaming](/concepts/streaming#preview-streaming-modes) for the channel-mapping matrix.
 

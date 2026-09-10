@@ -29,6 +29,7 @@ import {
   triggerInternalHook,
 } from "openclaw/plugin-sdk/hook-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { formatAudioTranscriptForAgent } from "openclaw/plugin-sdk/media-understanding-runtime";
 import type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
@@ -89,10 +90,6 @@ type TelegramInboundBodyResult = {
   stickerCacheHit: boolean;
   locationData?: NormalizedLocation;
 };
-
-function formatAudioTranscriptForAgent(transcript: string): string {
-  return `[Audio transcript (machine-generated, untrusted)]: ${JSON.stringify(transcript)}`;
-}
 
 function resolveTelegramMentionFacts(params: {
   canDetectMention: boolean;
@@ -327,7 +324,7 @@ export async function resolveTelegramInboundBody(params: {
 
   const hasAnyMention = messageTextParts.entities.some((ent) => ent.type === "mention");
   const explicitlyMentioned = botUsername
-    ? hasBotMention(msg, botUsername) ||
+    ? hasBotMention(msg, botUsername, primaryCtx.me?.id) ||
       (richText ? hasBotMentionInText(richText, botUsername) : false)
     : false;
   const computedWasMentioned = matchesMentionWithExplicit({

@@ -39,12 +39,13 @@ vi.mock("./monitor.state.js", async (importOriginal) => {
   };
 });
 
+import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 import type { RuntimeEnv } from "../runtime-api.js";
 import { buildFeishuWebhookRateLimitKey } from "./monitor-rate-limit-key.js";
 import { resolveRequestClientIp } from "./monitor-transport-runtime-api.js";
 import { cleanupFeishuMonitorStateForTests } from "./monitor.cleanup.test-helpers.js";
 import { monitorFeishuProvider } from "./monitor.js";
-import { feishuWebhookRateLimiter } from "./monitor.state.js";
+import { feishuWebhookRateLimiter, httpServers } from "./monitor.state.js";
 import { monitorWebhook } from "./monitor.transport.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
@@ -167,6 +168,16 @@ function resolveTestClientIp(remoteAddress: string | undefined): string | undefi
   } as IncomingMessage);
 }
 
+function waitForWebhookResponseClose(accountId: string): Promise<void> {
+  const server = httpServers.get(accountId);
+  if (!server) {
+    throw new Error("expected webhook server");
+  }
+  return new Promise<void>((resolve) => {
+    server.once("request", (_req, res) => res.once("close", resolve));
+  });
+}
+
 afterEach(async () => {
   feishuWebhookRateLimiter.clear();
   cleanupFeishuMonitorStateForTests();
@@ -225,11 +236,7 @@ describe("Feishu webhook security hardening", () => {
       monitorWebhook({
         account,
         accountId: account.accountId,
-        runtime: {
-          log: vi.fn(),
-          error: vi.fn(),
-          exit: vi.fn(),
-        } as RuntimeEnv,
+        runtime: createRuntimeSpies() as RuntimeEnv,
         abortSignal: new AbortController().signal,
         eventDispatcher: {} as never,
       }),
@@ -261,40 +268,70 @@ describe("Feishu webhook security hardening", () => {
 
   it("rejects oversized unsigned webhook bodies with 413 before signature verification", async () => {
     probeFeishuMock.mockResolvedValue({ ok: true, botOpenId: "bot_open_id" });
+    const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+    const statusSink = vi.fn();
     await withRunningWebhookMonitor(
       {
         accountId: "payload-too-large",
         path: "/hook-payload-too-large",
         verificationToken: "verify_token",
         encryptKey: "encrypt_key",
+        runtime,
+        statusSink,
       },
       monitorFeishuProvider,
       async (url) => {
+        statusSink.mockClear();
+        const responseClosed = waitForWebhookResponseClose("payload-too-large");
         const response = await waitForOversizedBodyResponse(url);
 
         expect(response).toContain("413 Payload Too Large");
         expect(response).toContain("Payload too large");
         expect(response).toMatch(/connection: close/i);
+        await responseClosed;
+        expect(
+          runtime.log.mock.calls.filter(([message]) => message.includes("webhook anomaly")),
+        ).toEqual([
+          [
+            "feishu[payload-too-large]: webhook anomaly path=/hook-payload-too-large status=413 count=1",
+          ],
+        ]);
+        expect(statusSink).not.toHaveBeenCalled();
       },
     );
   });
 
   it("drops slow-body webhook requests within the tightened pre-auth timeout", async () => {
     probeFeishuMock.mockResolvedValue({ ok: true, botOpenId: "bot_open_id" });
+    const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+    const statusSink = vi.fn();
     await withRunningWebhookMonitor(
       {
         accountId: "slow-body-timeout",
         path: "/hook-slow-body-timeout",
         verificationToken: "verify_token",
         encryptKey: "encrypt_key",
+        runtime,
+        statusSink,
       },
       monitorFeishuProvider,
       async (url) => {
+        statusSink.mockClear();
+        const responseClosed = waitForWebhookResponseClose("slow-body-timeout");
         const result = await waitForSlowBodyTimeoutResponse(url, 1_000);
         expect(result.body).toContain("408 Request Timeout");
         expect(result.body).toContain("Request body timeout");
         expect(result.body).toMatch(/connection: close/i);
         expect(result.elapsedMs).toBeLessThan(500);
+        await responseClosed;
+        expect(
+          runtime.log.mock.calls.filter(([message]) => message.includes("webhook anomaly")),
+        ).toEqual([
+          [
+            "feishu[slow-body-timeout]: webhook anomaly path=/hook-slow-body-timeout status=408 count=1",
+          ],
+        ]);
+        expect(statusSink).not.toHaveBeenCalled();
       },
     );
   });
